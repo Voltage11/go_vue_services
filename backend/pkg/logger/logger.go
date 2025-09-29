@@ -6,16 +6,6 @@ import (
 	"github.com/rs/zerolog"
 )
 
-//type LoggerType string
-//
-//const (
-//	LoggerDebug LoggerType = "logger-debug"
-//	LoggerInfo LoggerType = "logger-info"
-//	LoggerError LoggerType = "logger-error"
-//	LoggerFatal LoggerType = "logger-fatal"
-//	LoggerPanic LoggerType = "logger-panic"
-//)
-
 type AppLogger struct {
 	Logger *zerolog.Logger
 }
