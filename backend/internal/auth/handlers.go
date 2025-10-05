@@ -1,27 +1,24 @@
 package auth
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"record-services/internal/models"
 	"record-services/internal/repositories/user_repository"
+	"record-services/pkg/consts"
 	"record-services/pkg/utils"
+	"time"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/rs/zerolog"
 )
 
-type registerRequest struct {
-	Name           string `json:"name" validate:"required,min=2,max=100"`
-	Email          string `json:"email" validate:"required,email,max=255"`
-	Password       string `json:"password" validate:"required,min=6,max=15"`
-	PasswordRepeat string `json:"passwordRepeat" validate:"required,min=6,max=15"`
-}
-
-type loginRequest struct {
-	Email    string `json:"email"  validate:"required,email,max=255"`
-	Password string `json:"password" validate:"required,min=6,max=100"`
-}
+// Константы для кодов ошибок и сообщений
+const (
+	tokenExpiration = 24 * time.Hour
+	cookieMaxAge    = 3600
+)
 
 type AuthHandlers struct {
 	mux        *http.ServeMux
@@ -42,41 +39,41 @@ func NewAuthHandlers(mux *http.ServeMux, logger *zerolog.Logger, repository user
 		JwtSecret:  jwtSecret,
 	}
 
-	authHandlers.mux.HandleFunc("POST /auth/register", authHandlers.register)
-	authHandlers.mux.HandleFunc("POST /auth/login", authHandlers.login)
+	authHandlers.mux.HandleFunc("POST /api/auth/register", authHandlers.register)
+	authHandlers.mux.HandleFunc("POST /api/auth/login", authHandlers.login)
+	authHandlers.mux.HandleFunc("POST /api/auth/logout", authHandlers.logout)
 
 	return authHandlers
 }
 
 func (h *AuthHandlers) register(w http.ResponseWriter, r *http.Request) {
-	var registerData registerRequest
-	err := json.NewDecoder(r.Body).Decode(&registerData)
-	if err != nil {
-		http.Error(w, "Невалидный запрос", http.StatusBadRequest)
-		return
+	var registerData struct {
+		Name           string `json:"name" validate:"required,min=2,max=100"`
+		Email          string `json:"email" validate:"required,email,max=255"`
+		Password       string `json:"password" validate:"required,min=6,max=15"`
+		PasswordRepeat string `json:"passwordRepeat" validate:"required,min=6,max=15"`
 	}
-	// проверим валидные ли данные
-	err = h.validator.Struct(&registerData)
-	if err != nil {
-		http.Error(w, "Невалидный запрос", http.StatusBadRequest)
+
+	if !h.decodeAndValidate(w, r, &registerData) {
 		return
 	}
 
 	if registerData.Password != registerData.PasswordRepeat {
-		http.Error(w, "Пароли не совпадают", http.StatusBadRequest)
+		h.sendError(w, "Пароли не совпадают", http.StatusBadRequest)
 		return
 	}
 
-	// Проверка наличие пользователя с таким email
+	// Проверка наличия пользователя
 	existUser, err := h.repository.GetByEmail(registerData.Email)
-	if existUser != nil && err == nil {
-		h.logger.Info().Msgf("Пользователь с email: %s уже существует", registerData.Email)
-		http.Error(w, "Пользователь с таким email уже существует", http.StatusConflict)
+	if err != nil {
+		h.logger.Error().Err(err).Msgf("Ошибка при проверке пользователя: %s", registerData.Email)
+		h.sendError(w, "Ошибка при регистрации", http.StatusInternalServerError)
 		return
 	}
-	if err != nil {
-		h.logger.Error().Err(err).Msgf("ошибка при получении пользователя по email: %s", registerData.Email)
-		http.Error(w, "Ошибка при регистрации", http.StatusInternalServerError)
+
+	if existUser != nil {
+		h.logger.Info().Msgf("Пользователь с email: %s уже существует", registerData.Email)
+		h.sendError(w, "Пользователь с таким email уже существует", http.StatusConflict)
 		return
 	}
 
@@ -89,71 +86,152 @@ func (h *AuthHandlers) register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if _, err := h.repository.Create(newUser); err != nil {
-		h.logger.Error().Err(err).Msgf("ошибка при регистрации пользователя: %s", registerData.Email)
-		http.Error(w, "Ошибка при регистрации", http.StatusInternalServerError)
+		h.logger.Error().Err(err).Msgf("Ошибка при создании пользователя: %s", registerData.Email)
+		h.sendError(w, "Ошибка при регистрации", http.StatusInternalServerError)
 		return
 	}
-	w.Write([]byte(`{
-		"status": "ok"
-	}`))
 
+	h.sendJSONResponse(w, map[string]string{"status": "ok"})
 }
 
 func (h *AuthHandlers) login(w http.ResponseWriter, r *http.Request) {
-
-	var loginRequest loginRequest
-	err := json.NewDecoder(r.Body).Decode(&loginRequest)
-	if err != nil {
-		http.Error(w, "Не валидное тело запроса", http.StatusBadRequest)
-		return
+	var loginData struct {
+		Email    string `json:"email" validate:"required,email,max=255"`
+		Password string `json:"password" validate:"required,min=6,max=100"`
 	}
 
-	err = h.validator.Struct(&loginRequest)
-	if err != nil {
-		http.Error(w, "Не валидное тело запроса", http.StatusBadRequest)
-		return
-	}
-	user, err := h.repository.GetByEmail(loginRequest.Email)
-	if err != nil {
-		http.Error(w, "Ошибка при получении пользователя", http.StatusInternalServerError)
-		return
-	}
-	if user == nil {
-		http.Error(w, "Пользователь не найден", http.StatusNotFound)
+	if !h.decodeAndValidate(w, r, &loginData) {
 		return
 	}
 
-	if !utils.VerifyHash(loginRequest.Password, user.PasswordHash, h.hashSecret) {
-		http.Error(w, "Неверный логин или пароль", http.StatusUnauthorized)
+	user, err := h.repository.GetByEmail(loginData.Email)
+	if err != nil {
+		h.logger.Error().Err(err).Msgf("Ошибка при получении пользователя: %s", loginData.Email)
+		h.sendError(w, "Ошибка при авторизации", http.StatusInternalServerError)
+		return
+	}
+
+	if user == nil || !utils.VerifyHash(loginData.Password, user.PasswordHash, h.hashSecret) {
+		h.sendError(w, "Неверный логин или пароль", http.StatusUnauthorized)
 		return
 	}
 
 	if !user.IsActive {
-		http.Error(w, "Пользователь не активный, обратитесь к администратору", http.StatusUnauthorized)
+		h.sendError(w, "Пользователь не активный, обратитесь к администратору", http.StatusUnauthorized)
 		return
 	}
 
-	// Создаем токен для передачи в cookie
+	// Создаем токен
 	token, err := utils.CreateToken(utils.UserClaims{
 		ID:    user.ID,
 		Name:  user.Name,
 		Email: user.Email,
-	}, []byte(h.hashSecret))
+	}, []byte(h.JwtSecret))
 
 	if err != nil {
-		h.logger.Error().Err(err).Msgf("ошибка при создании токена для пользователя: %s", user.Email)
-		http.Error(w, "Ошибка при создании токена", http.StatusInternalServerError)
+		h.logger.Error().Err(err).Msgf("Ошибка при создании токена: %s", user.Email)
+		h.sendError(w, "Ошибка при авторизации", http.StatusInternalServerError)
 		return
 	}
 
-	// Установим cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "token",
-		Value:    token,
-		HttpOnly: true,
-		Secure:   true,
-		SameSite: http.SameSiteStrictMode,
-	})
+	// Устанавливаем cookies
+	h.setAuthCookies(w, token, user)
 
-	http.Redirect(w, r, "/", http.StatusFound)
+	h.sendJSONResponse(w, map[string]string{
+		"status": "ok",
+		"token":  token,
+		"user":   user.Name, // Добавляем информацию о пользователе
+	})
+}
+
+func (h *AuthHandlers) logout(w http.ResponseWriter, r *http.Request) {
+	h.clearAuthCookies(w)
+	h.sendJSONResponse(w, map[string]string{"status": "ok"})
+}
+
+// Вспомогательные методы
+
+func (h *AuthHandlers) decodeAndValidate(w http.ResponseWriter, r *http.Request, data interface{}) bool {
+	if err := json.NewDecoder(r.Body).Decode(data); err != nil {
+		h.sendError(w, "Невалидный запрос", http.StatusBadRequest)
+		return false
+	}
+
+	if err := h.validator.Struct(data); err != nil {
+		h.sendError(w, "Невалидные данные", http.StatusBadRequest)
+		return false
+	}
+
+	return true
+}
+
+func (h *AuthHandlers) sendError(w http.ResponseWriter, message string, statusCode int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(map[string]string{
+		"error":   http.StatusText(statusCode),
+		"message": message,
+	})
+}
+
+func (h *AuthHandlers) sendJSONResponse(w http.ResponseWriter, data interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(data)
+}
+
+func (h *AuthHandlers) setAuthCookies(w http.ResponseWriter, token string, user *models.User) {
+    // Токен cookie (без изменений)
+    http.SetCookie(w, &http.Cookie{
+        Name:     string(consts.CookieTokenKey),
+        Value:    token,
+        HttpOnly: true,
+        Secure:   true,
+        SameSite: http.SameSiteStrictMode,
+        Path:     "/",
+        MaxAge:   cookieMaxAge,
+    })
+
+    // User data cookie - используем base64
+    userData := map[string]string{
+        "name":  user.Name,
+        "email": user.Email,
+    }
+    
+    userDataJSON, err := json.Marshal(userData)
+    if err != nil {
+        h.logger.Error().Err(err).Msg("Ошибка при сериализации данных пользователя")
+        return
+    }
+
+    // Кодируем в base64 чтобы избежать проблем с кавычками
+    encodedUserData := base64.URLEncoding.EncodeToString(userDataJSON)
+
+    http.SetCookie(w, &http.Cookie{
+        Name:     string(consts.CookieUserDataKey),
+        Value:    encodedUserData, // Безопасное значение
+        Secure:   true,
+        SameSite: http.SameSiteStrictMode,
+        Path:     "/",
+        MaxAge:   cookieMaxAge,
+    })
+}
+
+func (h *AuthHandlers) clearAuthCookies(w http.ResponseWriter) {
+	cookies := []string{
+		string(consts.CookieTokenKey),
+		string(consts.CookieUserDataKey),
+	}
+
+	for _, name := range cookies {
+		http.SetCookie(w, &http.Cookie{
+			Name:     name,
+			Value:    "",
+			Path:     "/",
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteStrictMode,
+			MaxAge:   -1,
+		})
+	}
 }

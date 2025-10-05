@@ -1,0 +1,9 @@
+:root {
+    --bg-color-dark: #292424;
+    --bg-color-light: #ffffff;
+    --text-color: #ffffff;
+    --link-color-dark: #3a3b3d;
+    --link-color-dark-hover: #272729;
+    --link-color-light: #ffffff;
+    --link-color-light-hover: #dbd9d9;
+}

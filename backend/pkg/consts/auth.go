@@ -1,5 +1,14 @@
 package consts
 
-type tokenCookieKey string
+type CookieKey string
+type ContextKey string
 
-const TokenCookieKey tokenCookieKey = "token"
+const (
+	CookieTokenKey    CookieKey = "token"
+	CookieUserDataKey CookieKey = "user_data"
+
+	ContextUserKey ContextKey = "user"
+)
+
+
+

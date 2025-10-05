@@ -22,7 +22,7 @@ func CreateToken(user UserClaims, jwtKey []byte) (string, error) {
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)), // 24 часа
 		IssuedAt:  jwt.NewNumericDate(time.Now()),
 		NotBefore: jwt.NewNumericDate(time.Now()),
-		Issuer:    "your-app-name",
+		Issuer:    "services",
 		Subject:   "user-auth",
 	}
 

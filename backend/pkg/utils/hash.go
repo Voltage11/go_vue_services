@@ -16,8 +16,6 @@ func CreateHash(data string, secretKey string) string {
 
 // Проверяет валидность HMAC хеша
 func VerifyHash(data string, hash string, secretKey string) bool {
-	// Создаем хеш от переданных данных
 	expectedHash := CreateHash(data, secretKey)
-	// Сравниваем хеши безопасным способом (constant-time compare)
 	return hmac.Equal([]byte(expectedHash), []byte(hash))
 }

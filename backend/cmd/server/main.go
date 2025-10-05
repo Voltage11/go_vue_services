@@ -48,6 +48,7 @@ func main() {
 
 	//middlewares
 	middlewareAuth := middleware.AuthMiddleware(authHandlers)(mux)
+	middlewareAuth = middleware.CORSMiddleware(middlewareAuth)
 
 	// Установим уровень логирования из конфигурации
 	logger.SetLogLevel(cfg.LogLevel)
